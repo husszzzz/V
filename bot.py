@@ -3,7 +3,7 @@ import os
 from PIL import Image
 
 # توكن البوت مالتك
-TOKEN = "8774379921:AAEvpJVvF9K5fU9t57TE_5lAfG9Qx4heqIM"
+TOKEN = "8774379921:AAEx_USlCPgXD8Jm_WccoR6mY7yhAjW0mK0"
 bot = telebot.TeleBot(TOKEN)
 
 # قاموس لحفظ معلومات المستخدم
