@@ -2,30 +2,51 @@ import os
 import json
 import urllib.request
 import urllib.parse
-from http.server import BaseHTTPRequestHandler
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+# =========================
+# الإعدادات
+# =========================
 
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+
+WEB_APP_URL = "https://v-alyo.vercel.app/"
+
+TARGET_USERNAME = "@OM_G9"
+
+API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+
+# =========================
+# Telegram API
+# =========================
 
 def telegram(method, data=None):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+    if not BOT_TOKEN:
+        return {
+            "ok": False,
+            "error": "BOT_TOKEN is missing"
+        }
 
-    body = json.dumps(data or {}).encode("utf-8")
-
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers={
-            "Content-Type": "application/json"
-        },
-        method="POST"
-    )
+    if data is None:
+        data = {}
 
     try:
+        encoded = urllib.parse.urlencode(data).encode("utf-8")
+
+        request = urllib.request.Request(
+            f"{API_URL}/{method}",
+            data=encoded,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded"
+            },
+            method="POST"
+        )
+
         with urllib.request.urlopen(request, timeout=15) as response:
             return json.loads(
                 response.read().decode("utf-8")
             )
+
     except Exception as e:
         return {
             "ok": False,
@@ -33,137 +54,184 @@ def telegram(method, data=None):
         }
 
 
-def send_message(chat_id, text, keyboard=None):
+# =========================
+# إرسال رسالة البداية
+# =========================
 
-    data = {
-        "chat_id": chat_id,
-        "text": text
+def send_start(chat_id):
+
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "🎁 إرسال هدية",
+                    "web_app": {
+                        "url": WEB_APP_URL
+                    }
+                }
+            ]
+        ]
     }
 
-    if keyboard:
-        data["reply_markup"] = {
-            "inline_keyboard": keyboard
+    text = (
+        "🎁 أهلاً بك في بوت الهدايا\n\n"
+        f"يمكنك اختيار قيمة الهدية وإرسالها إلى {TARGET_USERNAME}\n\n"
+        "⭐ اختر إرسال هدية للمتابعة."
+    )
+
+    return telegram(
+        "sendMessage",
+        {
+            "chat_id": chat_id,
+            "text": text,
+            "reply_markup": json.dumps(
+                keyboard,
+                ensure_ascii=False
+            )
         }
+    )
 
-    return telegram("sendMessage", data)
 
+# =========================
+# معالجة التحديثات
+# =========================
 
 def handle_update(update):
+
+    if not isinstance(update, dict):
+        return
 
     message = update.get("message")
 
     if not message:
         return
 
-    chat_id = message["chat"]["id"]
+    chat = message.get("chat")
+
+    if not chat:
+        return
+
+    chat_id = chat.get("id")
+
+    if not chat_id:
+        return
+
     text = message.get("text", "")
 
     if text.startswith("/start"):
+        send_start(chat_id)
+        return
 
-        keyboard = [
-            [
+    if text.startswith("/help"):
+
+        telegram(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": (
+                    "🎁 بوت الهدايا\n\n"
+                    "اضغط الزر التالي لاختيار قيمة الهدية:"
+                ),
+                "reply_markup": json.dumps(
+                    {
+                        "inline_keyboard": [
+                            [
+                                {
+                                    "text": "🎁 إرسال هدية",
+                                    "web_app": {
+                                        "url": WEB_APP_URL
+                                    }
+                                }
+                            ]
+                        ]
+                    },
+                    ensure_ascii=False
+                )
+            }
+        )
+
+        return
+
+
+# =========================
+# Vercel Handler
+# =========================
+
+def handler(request):
+
+    # -------------------------
+    # GET
+    # -------------------------
+
+    if request.method == "GET":
+
+        return {
+            "statusCode": 200,
+            "headers": {
+                "Content-Type": "application/json; charset=utf-8"
+            },
+            "body": json.dumps(
                 {
-                    "text": "🎁 إرسال هدية إلى @OM_G9",
-                    "url": "https://t.me/OM_G9"
-                }
-            ]
-        ]
+                    "ok": True,
+                    "service": "Telegram Gift Demo",
+                    "web_app": WEB_APP_URL,
+                    "target": TARGET_USERNAME
+                },
+                ensure_ascii=False
+            )
+        }
 
-        send_message(
-            chat_id,
+    # -------------------------
+    # POST - Telegram Webhook
+    # -------------------------
 
-            "⭐ تجربة إرسال Stars\n\n"
-            "إذا تريد إرسال هدية/Stars إلى حسابي الشخصي:\n"
-            "@OM_G9\n\n"
-            "اضغط الزر بالأسفل لفتح الحساب.",
-
-            keyboard
-        )
-
-
-class handler(BaseHTTPRequestHandler):
-
-    def send_json(self, data, status=200):
-
-        output = json.dumps(
-            data,
-            ensure_ascii=False
-        ).encode("utf-8")
-
-        self.send_response(status)
-
-        self.send_header(
-            "Content-Type",
-            "application/json; charset=utf-8"
-        )
-
-        self.send_header(
-            "Content-Length",
-            str(len(output))
-        )
-
-        self.end_headers()
-
-        self.wfile.write(output)
-
-
-    def do_GET(self):
-
-        parsed = urllib.parse.urlparse(self.path)
-
-        if parsed.path == "/api":
-
-            self.send_json({
-                "ok": True,
-                "service": "Personal Stars Test Bot",
-                "recipient": "@OM_G9"
-            })
-
-            return
-
-        self.send_json({
-            "ok": False,
-            "error": "Not Found"
-        }, 404)
-
-
-    def do_POST(self):
-
-        parsed = urllib.parse.urlparse(self.path)
-
-        if parsed.path != "/api":
-
-            self.send_json({
-                "ok": False,
-                "error": "Not Found"
-            }, 404)
-
-            return
+    if request.method == "POST":
 
         try:
 
-            length = int(
-                self.headers.get(
-                    "Content-Length",
-                    "0"
-                )
-            )
+            body = request.body
 
-            body = self.rfile.read(length)
+            if isinstance(body, bytes):
+                body = body.decode("utf-8")
 
-            update = json.loads(
-                body.decode("utf-8")
-            )
+            update = json.loads(body)
 
             handle_update(update)
 
-            self.send_json({
-                "ok": True
-            })
+            return {
+                "statusCode": 200,
+                "headers": {
+                    "Content-Type": "application/json"
+                },
+                "body": json.dumps({
+                    "ok": True
+                })
+            }
 
         except Exception as e:
 
-            self.send_json({
-                "ok": False,
-                "error": str(e)
-            }, 500)
+            return {
+                "statusCode": 200,
+                "headers": {
+                    "Content-Type": "application/json"
+                },
+                "body": json.dumps({
+                    "ok": False,
+                    "error": str(e)
+                })
+            }
+
+    # -------------------------
+    # Method غير مدعوم
+    # -------------------------
+
+    return {
+        "statusCode": 405,
+        "headers": {
+            "Content-Type": "application/json"
+        },
+        "body": json.dumps({
+            "ok": False,
+            "error": "Method Not Allowed"
+        })
+    }
