@@ -3,27 +3,29 @@ import json
 import sqlite3
 import urllib.request
 import urllib.parse
+
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
 # =========================================================
-# SETTINGS
+# الإعدادات
 # =========================================================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 STORE_NAME = os.getenv("STORE_NAME", "بوت الرشق")
-
-# Vercel filesystem مؤقت
 DB_PATH = "/tmp/rashq.db"
+
+try:
+    ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+except Exception:
+    ADMIN_ID = 0
 
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
 # =========================================================
-# CUSTOM EMOJIS
+# Custom Emoji
 # =========================================================
 
 CUSTOM_EMOJIS = {
@@ -45,7 +47,7 @@ CUSTOM_EMOJIS = {
 
 
 # =========================================================
-# DATABASE
+# قاعدة البيانات
 # =========================================================
 
 def db():
@@ -55,7 +57,6 @@ def db():
 
 
 def init_db():
-
     connection = db()
     cur = connection.cursor()
 
@@ -105,40 +106,58 @@ def init_db():
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS topups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            stars INTEGER,
+            status TEXT DEFAULT 'pending',
+            telegram_charge_id TEXT,
+            created_at INTEGER DEFAULT (strftime('%s','now'))
+        )
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT
         )
     """)
 
-    # أقسام افتراضية
-    count = cur.execute(
-        "SELECT COUNT(*) FROM sections"
-    ).fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM sections")
 
-    if count == 0:
-
-        default_sections = [
-            ("متابعين", "👥"),
-            ("مشاهدات", "📉"),
-            ("تفاعلات", "💥"),
-            ("إعجابات", "🏅")
-        ]
-
-        cur.executemany(
+    if cur.fetchone()[0] == 0:
+        cur.execute(
             "INSERT INTO sections (name, emoji) VALUES (?, ?)",
-            default_sections
+            ("متابعين", "👥")
+        )
+
+        cur.execute(
+            "INSERT INTO sections (name, emoji) VALUES (?, ?)",
+            ("مشاهدات", "📉")
+        )
+
+        cur.execute(
+            "INSERT INTO sections (name, emoji) VALUES (?, ?)",
+            ("تفاعلات", "💥")
+        )
+
+        cur.execute(
+            "INSERT INTO sections (name, emoji) VALUES (?, ?)",
+            ("إعجابات", "🏅")
         )
 
     connection.commit()
     connection.close()
 
 
-init_db()
+try:
+    init_db()
+except Exception as e:
+    print("DATABASE INIT ERROR:", e)
 
 
 # =========================================================
-# TELEGRAM API
+# Telegram API
 # =========================================================
 
 def telegram(method, data=None):
@@ -146,35 +165,27 @@ def telegram(method, data=None):
     if not BOT_TOKEN:
         return {
             "ok": False,
-            "description": "BOT_TOKEN غير موجود"
+            "description": "BOT_TOKEN غير موجود في Vercel"
         }
 
     data = data or {}
 
     try:
-
-        encoded = urllib.parse.urlencode(
-            data
-        ).encode("utf-8")
+        encoded = urllib.parse.urlencode(data).encode("utf-8")
 
         req = urllib.request.Request(
             f"{API_URL}/{method}",
             data=encoded,
             headers={
-                "Content-Type":
-                "application/x-www-form-urlencoded"
+                "Content-Type": "application/x-www-form-urlencoded"
             },
             method="POST"
         )
 
-        with urllib.request.urlopen(
-            req,
-            timeout=20
-        ) as response:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            raw = response.read().decode("utf-8")
 
-            return json.loads(
-                response.read().decode("utf-8")
-            )
+            return json.loads(raw)
 
     except Exception as e:
 
@@ -187,33 +198,30 @@ def telegram(method, data=None):
 
 
 # =========================================================
-# CUSTOM EMOJI TEXT
+# Custom Emoji
 # =========================================================
 
 def utf16_length(text):
-    return len(
-        text.encode("utf-16-le")
-    ) // 2
+    return len(text.encode("utf-16-le")) // 2
 
 
 def custom_text(text):
 
     entities = []
 
-    for emoji, emoji_id in sorted(
+    emojis = sorted(
         CUSTOM_EMOJIS.items(),
         key=lambda x: len(x[0]),
         reverse=True
-    ):
+    )
+
+    for emoji, emoji_id in emojis:
 
         start = 0
 
         while True:
 
-            position = text.find(
-                emoji,
-                start
-            )
+            position = text.find(emoji, start)
 
             if position == -1:
                 break
@@ -233,41 +241,10 @@ def custom_text(text):
 
 
 # =========================================================
-# BUTTON HELPERS
+# إرسال رسالة
 # =========================================================
 
-def button(
-    text,
-    callback=None,
-    style=None,
-    emoji_id=None
-):
-
-    item = {
-        "text": text
-    }
-
-    if callback:
-        item["callback_data"] = callback
-
-    if style:
-        item["style"] = style
-
-    if emoji_id:
-        item["icon_custom_emoji_id"] = emoji_id
-
-    return item
-
-
-# =========================================================
-# SEND MESSAGE
-# =========================================================
-
-def send_message(
-    chat_id,
-    text,
-    keyboard=None
-):
+def send_message(chat_id, text, keyboard=None):
 
     text, entities = custom_text(text)
 
@@ -286,66 +263,10 @@ def send_message(
             ensure_ascii=False
         )
 
-    return telegram(
-        "sendMessage",
-        data
-    )
+    return telegram("sendMessage", data)
 
 
-# =========================================================
-# EDIT MESSAGE
-# =========================================================
-
-def edit_message(
-    chat_id,
-    message_id,
-    text,
-    keyboard=None
-):
-
-    text, entities = custom_text(text)
-
-    data = {
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "text": text,
-        "entities": json.dumps(
-            entities,
-            ensure_ascii=False
-        )
-    }
-
-    if keyboard:
-
-        data["reply_markup"] = json.dumps(
-            keyboard,
-            ensure_ascii=False
-        )
-
-    else:
-
-        data["reply_markup"] = json.dumps(
-            {
-                "inline_keyboard": []
-            }
-        )
-
-    result = telegram(
-        "editMessageText",
-        data
-    )
-
-    return result
-
-
-# =========================================================
-# CALLBACK ANSWER
-# =========================================================
-
-def answer_callback(
-    callback_id,
-    text=""
-):
+def answer_callback(callback_id, text=""):
 
     return telegram(
         "answerCallbackQuery",
@@ -357,7 +278,7 @@ def answer_callback(
 
 
 # =========================================================
-# USER
+# المستخدمين
 # =========================================================
 
 def save_user(user):
@@ -369,12 +290,11 @@ def save_user(user):
         (id, username, first_name)
         VALUES (?, ?, ?)
 
-        ON CONFLICT(id)
-        DO UPDATE SET
-            username=excluded.username,
-            first_name=excluded.first_name
+        ON CONFLICT(id) DO UPDATE SET
+        username=excluded.username,
+        first_name=excluded.first_name
     """, (
-        user["id"],
+        user.get("id"),
         user.get("username", ""),
         user.get("first_name", "")
     ))
@@ -397,10 +317,7 @@ def get_user(user_id):
     return row
 
 
-def change_balance(
-    user_id,
-    amount
-):
+def change_balance(user_id, amount):
 
     connection = db()
 
@@ -410,10 +327,7 @@ def change_balance(
         SET balance = balance + ?
         WHERE id=?
         """,
-        (
-            amount,
-            user_id
-        )
+        (amount, user_id)
     )
 
     connection.commit()
@@ -421,7 +335,7 @@ def change_balance(
 
 
 # =========================================================
-# MAIN MENU
+# القائمة الرئيسية
 # =========================================================
 
 def main_keyboard():
@@ -430,51 +344,36 @@ def main_keyboard():
         "inline_keyboard": [
 
             [
-                button(
-                    "🛍 الخدمات",
-                    "sections",
-                    "primary",
-                    CUSTOM_EMOJIS["🛍"]
-                ),
-
-                button(
-                    "👑 حسابي",
-                    "account",
-                    "primary",
-                    CUSTOM_EMOJIS["👑"]
-                )
+                {
+                    "text": "🛍 الخدمات",
+                    "callback_data": "sections"
+                },
+                {
+                    "text": "👑 حسابي",
+                    "callback_data": "account"
+                }
             ],
 
             [
-                button(
-                    "💳 شحن الرصيد",
-                    "topup",
-                    "success",
-                    CUSTOM_EMOJIS["💳"]
-                ),
-
-                button(
-                    "🗓 طلباتي",
-                    "orders",
-                    "primary",
-                    CUSTOM_EMOJIS["🗓"]
-                )
+                {
+                    "text": "💳 شحن الرصيد",
+                    "callback_data": "topup"
+                },
+                {
+                    "text": "🗓 طلباتي",
+                    "callback_data": "orders"
+                }
             ],
 
             [
-                button(
-                    "📉 الإحصائيات",
-                    "stats",
-                    "primary",
-                    CUSTOM_EMOJIS["📉"]
-                ),
-
-                button(
-                    "🛡 الدعم",
-                    "support",
-                    "primary",
-                    CUSTOM_EMOJIS["🛡"]
-                )
+                {
+                    "text": "📉 الإحصائيات",
+                    "callback_data": "stats"
+                },
+                {
+                    "text": "🛡 الدعم",
+                    "callback_data": "support"
+                }
             ]
 
         ]
@@ -482,7 +381,7 @@ def main_keyboard():
 
 
 # =========================================================
-# ADMIN MENU
+# لوحة الإدارة
 # =========================================================
 
 def admin_keyboard():
@@ -491,47 +390,38 @@ def admin_keyboard():
         "inline_keyboard": [
 
             [
-                button(
-                    "🛍 إدارة الأقسام",
-                    "admin_sections",
-                    "primary",
-                    CUSTOM_EMOJIS["🛍"]
-                )
+                {
+                    "text": "🛍 إدارة الأقسام",
+                    "callback_data": "admin_sections"
+                }
             ],
 
             [
-                button(
-                    "📦 إدارة الخدمات",
-                    "admin_services",
-                    "primary",
-                    CUSTOM_EMOJIS["📥"]
-                )
+                {
+                    "text": "📉 إدارة الخدمات",
+                    "callback_data": "admin_services"
+                }
             ],
 
             [
-                button(
-                    "🗓 الطلبات المعلقة",
-                    "admin_orders",
-                    "primary",
-                    CUSTOM_EMOJIS["🗓"]
-                )
+                {
+                    "text": "🗓 الطلبات المعلقة",
+                    "callback_data": "admin_orders"
+                }
             ],
 
             [
-                button(
-                    "📊 إحصائيات المتجر",
-                    "admin_stats",
-                    "primary",
-                    CUSTOM_EMOJIS["📉"]
-                )
+                {
+                    "text": "💳 شحن مستخدم",
+                    "callback_data": "admin_add_balance"
+                }
             ],
 
             [
-                button(
-                    "🔙 الرئيسية",
-                    "home",
-                    "danger"
-                )
+                {
+                    "text": "📊 الإحصائيات",
+                    "callback_data": "admin_stats"
+                }
             ]
 
         ]
@@ -539,66 +429,39 @@ def admin_keyboard():
 
 
 # =========================================================
-# START
+# البداية
 # =========================================================
 
-def start_user(
-    chat_id,
-    user,
-    message_id=None
-):
+def start_user(chat_id, user):
 
     save_user(user)
 
-    row = get_user(
-        user["id"]
-    )
+    row = get_user(user["id"])
 
-    balance = (
-        row["balance"]
-        if row
-        else 0
-    )
+    balance = row["balance"] if row else 0
 
     text = f"""
 👑 أهلاً بك في {STORE_NAME}
 
-🛍 منصة خدمات رقمية سريعة ومرتبة
+🛍 منصة خدمات رقمية مرتبة وسريعة
 
-💳 رصيدك الحالي:
-{balance:.1f} نقطة
+💳 رصيدك: {balance} نقطة
 
-✨ اختر العملية المطلوبة من الأسفل.
+اختر الخدمة المطلوبة من القائمة بالأسفل.
 """.strip()
 
-    keyboard = main_keyboard()
-
-    if message_id:
-
-        edit_message(
-            chat_id,
-            message_id,
-            text,
-            keyboard
-        )
-
-    else:
-
-        send_message(
-            chat_id,
-            text,
-            keyboard
-        )
+    send_message(
+        chat_id,
+        text,
+        main_keyboard()
+    )
 
 
 # =========================================================
-# SECTIONS
+# الأقسام
 # =========================================================
 
-def show_sections(
-    chat_id,
-    message_id
-):
+def show_sections(chat_id):
 
     connection = db()
 
@@ -616,24 +479,21 @@ def show_sections(
     for row in rows:
 
         buttons.append([
-            button(
-                f"{row['emoji']} {row['name']}",
-                f"section:{row['id']}",
-                "primary"
-            )
+            {
+                "text": f"{row['emoji']} {row['name']}",
+                "callback_data": f"section:{row['id']}"
+            }
         ])
 
     buttons.append([
-        button(
-            "🔙 الرئيسية",
-            "home",
-            "danger"
-        )
+        {
+            "text": "🔙 رجوع",
+            "callback_data": "home"
+        }
     ])
 
-    edit_message(
+    send_message(
         chat_id,
-        message_id,
         "🛍 الأقسام\n\nاختر القسم المطلوب:",
         {
             "inline_keyboard": buttons
@@ -642,80 +502,44 @@ def show_sections(
 
 
 # =========================================================
-# SERVICES
+# الخدمات
 # =========================================================
 
-def show_services(
-    chat_id,
-    message_id,
-    section_id
-):
+def show_services(chat_id, section_id):
 
     connection = db()
 
-    section = connection.execute(
-        "SELECT * FROM sections WHERE id=?",
-        (section_id,)
-    ).fetchone()
-
-    rows = connection.execute(
-        """
+    rows = connection.execute("""
         SELECT *
         FROM services
         WHERE section_id=?
         AND enabled=1
         ORDER BY id ASC
-        """,
-        (section_id,)
-    ).fetchall()
+    """, (section_id,)).fetchall()
 
     connection.close()
-
-    if not section:
-
-        edit_message(
-            chat_id,
-            message_id,
-            "❌ القسم غير موجود.",
-            {
-                "inline_keyboard": [
-                    [
-                        button(
-                            "🔙 الأقسام",
-                            "sections",
-                            "danger"
-                        )
-                    ]
-                ]
-            }
-        )
-
-        return
 
     buttons = []
 
     for row in rows:
 
         buttons.append([
-            button(
-                f"🛍 {row['name']} — {row['price']} نقطة",
-                f"service:{row['id']}",
-                "primary"
-            )
+            {
+                "text": f"🛍 {row['name']} — {row['price']} نقطة",
+                "callback_data": f"service:{row['id']}"
+            }
         ])
 
     buttons.append([
-        button(
-            "🔙 الأقسام",
-            "sections",
-            "danger"
-        )
+        {
+            "text": "🔙 الأقسام",
+            "callback_data": "sections"
+        }
     ])
 
-    edit_message(
+    send_message(
         chat_id,
-        message_id,
-        f"{section['emoji']} {section['name']}\n\nاختر الخدمة المطلوبة:",
+        "📦 الخدمات المتاحة\n\nاختر الخدمة:",
         {
             "inline_keyboard": buttons
         }
@@ -723,14 +547,10 @@ def show_services(
 
 
 # =========================================================
-# SERVICE DETAILS
+# تفاصيل الخدمة
 # =========================================================
 
-def show_service(
-    chat_id,
-    message_id,
-    service_id
-):
+def show_service(chat_id, service_id):
 
     connection = db()
 
@@ -748,9 +568,8 @@ def show_service(
 
     if not row:
 
-        edit_message(
+        send_message(
             chat_id,
-            message_id,
             "❌ الخدمة غير موجودة."
         )
 
@@ -761,704 +580,99 @@ def show_service(
 
 📝 {row['description'] or 'لا يوجد وصف'}
 
-💰 السعر:
-{row['price']} نقطة لكل 1000
+💰 السعر: {row['price']} نقطة لكل 1000
 
-📊 الحد الأدنى:
-{row['min_amount']}
+📊 الحد الأدنى: {row['min_amount']}
+📊 الحد الأقصى: {row['max_amount']}
 
-📊 الحد الأقصى:
-{row['max_amount']}
-
-✨ اضغط بالأسفل للمتابعة.
+اضغط طلب الخدمة للمتابعة.
 """.strip()
 
     keyboard = {
         "inline_keyboard": [
 
             [
-                button(
-                    "🛒 طلب الخدمة",
-                    f"order:{row['id']}",
-                    "success"
-                )
-            ],
-
-            [
-                button(
-                    "🔙 رجوع",
-                    f"section:{row['section_id']}",
-                    "danger"
-                )
-            ]
-
-        ]
-    }
-
-    edit_message(
-        chat_id,
-        message_id,
-        text,
-        keyboard
-    )
-
-
-# =========================================================
-# ACCOUNT
-# =========================================================
-
-def show_account(
-    chat_id,
-    message_id,
-    user_id
-):
-
-    user = get_user(user_id)
-
-    if not user:
-        return
-
-    username = (
-        f"@{user['username']}"
-        if user["username"]
-        else "بدون معرف"
-    )
-
-    text = f"""
-👑 حسابك
-
-🆔 ID:
-{user['id']}
-
-👤 المستخدم:
-{username}
-
-💳 الرصيد:
-{user['balance']:.1f} نقطة
-""".strip()
-
-    keyboard = {
-        "inline_keyboard": [
-
-            [
-                button(
-                    "💳 شحن الرصيد",
-                    "topup",
-                    "success"
-                )
-            ],
-
-            [
-                button(
-                    "🗓 طلباتي",
-                    "orders",
-                    "primary"
-                )
-            ],
-
-            [
-                button(
-                    "🔙 الرئيسية",
-                    "home",
-                    "danger"
-                )
-            ]
-
-        ]
-    }
-
-    edit_message(
-        chat_id,
-        message_id,
-        text,
-        keyboard
-    )
-
-
-# =========================================================
-# ORDERS
-# =========================================================
-
-def show_orders(
-    chat_id,
-    message_id,
-    user_id
-):
-
-    connection = db()
-
-    rows = connection.execute(
-        """
-        SELECT orders.*, services.name
-        FROM orders
-
-        LEFT JOIN services
-        ON services.id=orders.service_id
-
-        WHERE orders.user_id=?
-
-        ORDER BY orders.id DESC
-
-        LIMIT 10
-        """,
-        (user_id,)
-    ).fetchall()
-
-    connection.close()
-
-    if not rows:
-
-        text = """
-🗓 طلباتك
-
-لا توجد لديك طلبات حتى الآن.
-""".strip()
-
-    else:
-
-        status_names = {
-            "pending": "⏳ بانتظار المراجعة",
-            "accepted": "🔵 مقبول",
-            "working": "🛠 قيد التنفيذ",
-            "completed": "✅ مكتمل",
-            "rejected": "❌ مرفوض"
-        }
-
-        text = "🗓 آخر طلباتك\n\n"
-
-        for row in rows:
-
-            status = status_names.get(
-                row["status"],
-                row["status"]
-            )
-
-            text += (
-                f"🆔 #{row['id']}\n"
-                f"🛍 {row['name']}\n"
-                f"📊 {row['quantity']}\n"
-                f"{status}\n"
-                f"────────────\n"
-            )
-
-    edit_message(
-        chat_id,
-        message_id,
-        text,
-        {
-            "inline_keyboard": [
-                [
-                    button(
-                        "🔄 تحديث",
-                        "orders",
-                        "primary"
-                    )
-                ],
-                [
-                    button(
-                        "🔙 الرئيسية",
-                        "home",
-                        "danger"
-                    )
-                ]
-            ]
-        }
-    )
-
-
-# =========================================================
-# STATS
-# =========================================================
-
-def stats_text():
-
-    connection = db()
-
-    users = connection.execute(
-        "SELECT COUNT(*) FROM users"
-    ).fetchone()[0]
-
-    orders = connection.execute(
-        "SELECT COUNT(*) FROM orders"
-    ).fetchone()[0]
-
-    completed = connection.execute(
-        """
-        SELECT COUNT(*)
-        FROM orders
-        WHERE status='completed'
-        """
-    ).fetchone()[0]
-
-    pending = connection.execute(
-        """
-        SELECT COUNT(*)
-        FROM orders
-        WHERE status='pending'
-        """
-    ).fetchone()[0]
-
-    connection.close()
-
-    return f"""
-📊 إحصائيات المتجر
-
-👥 المستخدمون:
-{users}
-
-🗓 جميع الطلبات:
-{orders}
-
-⏳ المعلقة:
-{pending}
-
-🏅 المكتملة:
-{completed}
-""".strip()
-
-
-def show_stats(
-    chat_id,
-    message_id
-):
-
-    edit_message(
-        chat_id,
-        message_id,
-        stats_text(),
-        {
-            "inline_keyboard": [
-                [
-                    button(
-                        "🔄 تحديث",
-                        "stats",
-                        "primary"
-                    )
-                ],
-                [
-                    button(
-                        "🔙 الرئيسية",
-                        "home",
-                        "danger"
-                    )
-                ]
-            ]
-        }
-    )
-
-
-# =========================================================
-# SUPPORT
-# =========================================================
-
-def show_support(
-    chat_id,
-    message_id
-):
-
-    text = """
-🛡 الدعم
-
-إذا واجهتك مشكلة في طلبك أو حسابك،
-تواصل مع الإدارة.
-
-✨ سيتم الرد عليك بأقرب وقت.
-""".strip()
-
-    edit_message(
-        chat_id,
-        message_id,
-        text,
-        {
-            "inline_keyboard": [
-                [
-                    button(
-                        "🔙 الرئيسية",
-                        "home",
-                        "danger"
-                    )
-                ]
-            ]
-        }
-    )
-
-
-# =========================================================
-# TOPUP
-# =========================================================
-
-def create_invoice(
-    chat_id,
-    message_id
-):
-
-    result = telegram(
-        "sendInvoice",
-        {
-            "chat_id": chat_id,
-            "title": "💳 شحن الرصيد",
-            "description": "شحن 10 نقاط",
-            "payload": f"topup_{chat_id}_10",
-            "currency": "XTR",
-            "prices": json.dumps([
                 {
-                    "label": "10 نقاط",
-                    "amount": 10
+                    "text": "🛒 طلب الخدمة",
+                    "callback_data": f"order:{row['id']}"
                 }
-            ])
-        }
-    )
-
-    if result.get("ok"):
-
-        edit_message(
-            chat_id,
-            message_id,
-            """
-💳 شحن الرصيد
-
-اخترت باقة الشحن.
-
-✨ سيتم إرسال فاتورة Telegram Stars.
-""".strip(),
-            {
-                "inline_keyboard": [
-                    [
-                        button(
-                            "🔙 الرئيسية",
-                            "home",
-                            "danger"
-                        )
-                    ]
-                ]
-            }
-        )
-
-    else:
-
-        edit_message(
-            chat_id,
-            message_id,
-            "❌ تعذر إنشاء فاتورة الشحن حالياً.",
-            {
-                "inline_keyboard": [
-                    [
-                        button(
-                            "🔙 الرئيسية",
-                            "home",
-                            "danger"
-                        )
-                    ]
-                ]
-            }
-        )
-
-
-# =========================================================
-# ADMIN HOME
-# =========================================================
-
-def admin_menu(
-    chat_id,
-    message_id
-):
-
-    text = f"""
-👑 لوحة تحكم {STORE_NAME}
-
-🛠 من هنا تقدر تدير:
-
-🛍 الأقسام
-📦 الخدمات
-🗓 الطلبات
-📊 الإحصائيات
-
-اختر العملية:
-""".strip()
-
-    edit_message(
-        chat_id,
-        message_id,
-        text,
-        admin_keyboard()
-    )
-
-
-# =========================================================
-# ADMIN SECTIONS
-# =========================================================
-
-def admin_sections(
-    chat_id,
-    message_id
-):
-
-    connection = db()
-
-    rows = connection.execute(
-        "SELECT * FROM sections ORDER BY id"
-    ).fetchall()
-
-    connection.close()
-
-    buttons = []
-
-    for row in rows:
-
-        status = (
-            "🟢"
-            if row["enabled"]
-            else "🔴"
-        )
-
-        buttons.append([
-            button(
-                f"{status} {row['emoji']} {row['name']}",
-                f"admin_section:{row['id']}",
-                "primary"
-            )
-        ])
-
-    buttons.append([
-        button(
-            "➕ إضافة قسم",
-            "admin_add_section",
-            "success"
-        )
-    ])
-
-    buttons.append([
-        button(
-            "🔙 لوحة الإدارة",
-            "admin",
-            "danger"
-        )
-    ])
-
-    edit_message(
-        chat_id,
-        message_id,
-        "🛍 إدارة الأقسام\n\nاختر القسم:",
-        {
-            "inline_keyboard": buttons
-        }
-    )
-
-
-# =========================================================
-# ADMIN SERVICES
-# =========================================================
-
-def admin_services(
-    chat_id,
-    message_id
-):
-
-    connection = db()
-
-    rows = connection.execute(
-        """
-        SELECT services.*, sections.name AS section_name
-        FROM services
-
-        LEFT JOIN sections
-        ON sections.id=services.section_id
-
-        ORDER BY services.id DESC
-
-        LIMIT 50
-        """
-    ).fetchall()
-
-    connection.close()
-
-    buttons = []
-
-    for row in rows:
-
-        status = (
-            "🟢"
-            if row["enabled"]
-            else "🔴"
-        )
-
-        buttons.append([
-            button(
-                f"{status} {row['name']}",
-                f"admin_service:{row['id']}",
-                "primary"
-            )
-        ])
-
-    buttons.append([
-        button(
-            "➕ إضافة خدمة",
-            "admin_add_service",
-            "success"
-        )
-    ])
-
-    buttons.append([
-        button(
-            "🔙 لوحة الإدارة",
-            "admin",
-            "danger"
-        )
-    ])
-
-    edit_message(
-        chat_id,
-        message_id,
-        "📦 إدارة الخدمات\n\nاختر الخدمة:",
-        {
-            "inline_keyboard": buttons
-        }
-    )
-
-
-# =========================================================
-# ADMIN ORDERS
-# =========================================================
-
-def admin_orders(
-    chat_id,
-    message_id
-):
-
-    connection = db()
-
-    rows = connection.execute(
-        """
-        SELECT orders.*, services.name
-        FROM orders
-
-        LEFT JOIN services
-        ON services.id=orders.service_id
-
-        WHERE orders.status='pending'
-
-        ORDER BY orders.id DESC
-
-        LIMIT 20
-        """
-    ).fetchall()
-
-    connection.close()
-
-    if not rows:
-
-        edit_message(
-            chat_id,
-            message_id,
-            "🗓 الطلبات المعلقة\n\n✅ لا توجد طلبات معلقة.",
-            {
-                "inline_keyboard": [
-                    [
-                        button(
-                            "🔙 لوحة الإدارة",
-                            "admin",
-                            "danger"
-                        )
-                    ]
-                ]
-            }
-        )
-
-        return
-
-    text = "🗓 الطلبات المعلقة\n\n"
-
-    buttons = []
-
-    for row in rows:
-
-        text += (
-            f"🆔 #{row['id']}\n"
-            f"🛍 {row['name']}\n"
-            f"🎯 {row['target']}\n"
-            f"📊 {row['quantity']}\n"
-            f"💰 {row['total']} نقطة\n"
-            f"────────────\n"
-        )
-
-        buttons.append([
-            button(
-                f"✅ قبول #{row['id']}",
-                f"accept:{row['id']}",
-                "success"
-            ),
-            button(
-                f"❌ رفض #{row['id']}",
-                f"reject:{row['id']}",
-                "danger"
-            )
-        ])
-
-    buttons.append([
-        button(
-            "🔙 لوحة الإدارة",
-            "admin",
-            "danger"
-        )
-    ])
-
-    edit_message(
-        chat_id,
-        message_id,
-        text,
-        {
-            "inline_keyboard": buttons
-        }
-    )
-
-
-# =========================================================
-# ADMIN STATS
-# =========================================================
-
-def admin_stats(
-    chat_id,
-    message_id
-):
-
-    edit_message(
-        chat_id,
-        message_id,
-        stats_text(),
-        {
-            "inline_keyboard": [
-                [
-                    button(
-                        "🔄 تحديث",
-                        "admin_stats",
-                        "primary"
-                    )
-                ],
-                [
-                    button(
-                        "🔙 لوحة الإدارة",
-                        "admin",
-                        "danger"
-                    )
-                ]
+            ],
+
+            [
+                {
+                    "text": "🔙 رجوع",
+                    "callback_data": f"section:{row['section_id']}"
+                }
             ]
-        }
+
+        ]
+    }
+
+    send_message(
+        chat_id,
+        text,
+        keyboard
     )
 
 
 # =========================================================
-# ORDER STATE
+# الطلبات
 # =========================================================
 
 PENDING = {}
 
 
-def begin_order(
-    chat_id,
-    message_id,
-    service_id,
-    user_id
-):
+def begin_order(chat_id, service_id):
+
+    connection = db()
+
+    row = connection.execute(
+        "SELECT * FROM services WHERE id=?",
+        (service_id,)
+    ).fetchone()
+
+    connection.close()
+
+    if not row:
+
+        send_message(
+            chat_id,
+            "❌ الخدمة غير موجودة."
+        )
+
+        return
+
+    PENDING[chat_id] = {
+        "type": "order_target",
+        "service_id": service_id
+    }
+
+    send_message(
+        chat_id,
+        f"""
+🛒 إنشاء طلب
+
+🛍 الخدمة: {row['name']}
+
+أرسل الآن الرابط أو المعرف المطلوب للخدمة.
+
+مثال:
+https://t.me/example
+""".strip()
+    )
+
+
+def receive_order_target(user_id, chat_id, text):
+
+    state = PENDING.get(user_id)
+
+    if not state:
+        return False
+
+    if state["type"] != "order_target":
+        return False
+
+    service_id = state["service_id"]
 
     connection = db()
 
@@ -1470,144 +684,87 @@ def begin_order(
     connection.close()
 
     if not service:
-        return
 
-    PENDING[user_id] = {
-        "type": "target",
-        "service_id": service_id,
-        "message_id": message_id
-    }
-
-    edit_message(
-        chat_id,
-        message_id,
-        f"""
-🛒 إنشاء الطلب
-
-🛍 الخدمة:
-{service['name']}
-
-🎯 أرسل الآن الرابط أو المعرف المطلوب.
-
-مثال:
-https://t.me/example
-""".strip(),
-        {
-            "inline_keyboard": [
-                [
-                    button(
-                        "❌ إلغاء",
-                        "cancel_order",
-                        "danger"
-                    )
-                ]
-            ]
-        }
-    )
-
-
-def receive_target(
-    user_id,
-    chat_id,
-    text
-):
-
-    state = PENDING.get(user_id)
-
-    if not state:
-        return False
-
-    connection = db()
-
-    service = connection.execute(
-        "SELECT * FROM services WHERE id=?",
-        (state["service_id"],)
-    ).fetchone()
-
-    connection.close()
-
-    if not service:
         PENDING.pop(user_id, None)
+
+        send_message(
+            chat_id,
+            "❌ الخدمة غير موجودة."
+        )
+
         return True
 
-    state["type"] = "quantity"
-    state["target"] = text
+    PENDING[user_id] = {
+        "type": "order_quantity",
+        "service_id": service_id,
+        "target": text
+    }
 
-    edit_message(
+    send_message(
         chat_id,
-        state["message_id"],
         f"""
 📊 الكمية المطلوبة
 
-🛍 الخدمة:
+الخدمة:
 {service['name']}
 
-📉 الحد الأدنى:
-{service['min_amount']}
-
-📈 الحد الأقصى:
-{service['max_amount']}
+الحد الأدنى: {service['min_amount']}
+الحد الأقصى: {service['max_amount']}
 
 أرسل الكمية فقط.
-""".strip(),
-        {
-            "inline_keyboard": [
-                [
-                    button(
-                        "❌ إلغاء",
-                        "cancel_order",
-                        "danger"
-                    )
-                ]
-            ]
-        }
+""".strip()
     )
 
     return True
 
 
-def receive_quantity(
-    user_id,
-    chat_id,
-    text
-):
+def receive_order_quantity(user_id, chat_id, text):
 
     state = PENDING.get(user_id)
 
     if not state:
         return False
 
+    if state["type"] != "order_quantity":
+        return False
+
     try:
         quantity = int(text)
+    except Exception:
 
-    except:
-
-        edit_message(
+        send_message(
             chat_id,
-            state["message_id"],
             "❌ أرسل رقم الكمية فقط."
         )
 
         return True
 
+    service_id = state["service_id"]
+
     connection = db()
 
     service = connection.execute(
         "SELECT * FROM services WHERE id=?",
-        (state["service_id"],)
+        (service_id,)
     ).fetchone()
 
     connection.close()
 
     if not service:
+
         PENDING.pop(user_id, None)
+
+        send_message(
+            chat_id,
+            "❌ الخدمة غير موجودة."
+        )
+
         return True
 
     if quantity < service["min_amount"]:
 
-        edit_message(
+        send_message(
             chat_id,
-            state["message_id"],
             f"❌ الحد الأدنى هو {service['min_amount']}."
         )
 
@@ -1615,61 +772,34 @@ def receive_quantity(
 
     if quantity > service["max_amount"]:
 
-        edit_message(
+        send_message(
             chat_id,
-            state["message_id"],
             f"❌ الحد الأقصى هو {service['max_amount']}."
         )
 
         return True
 
-    total = (
-        quantity / 1000
-    ) * service["price"]
+    total = (quantity / 1000) * service["price"]
 
     user = get_user(user_id)
 
-    balance = (
-        user["balance"]
-        if user
-        else 0
-    )
+    balance = float(user["balance"]) if user else 0
 
     if balance < total:
 
-        PENDING.pop(user_id, None)
-
-        edit_message(
+        send_message(
             chat_id,
-            state["message_id"],
             f"""
 ❌ الرصيد غير كافٍ.
 
-💳 رصيدك:
-{balance:.1f}
+💳 رصيدك: {balance}
+💰 المطلوب: {round(total, 2)}
 
-💰 المطلوب:
-{total:.1f}
-""".strip(),
-            {
-                "inline_keyboard": [
-                    [
-                        button(
-                            "💳 شحن الرصيد",
-                            "topup",
-                            "success"
-                        )
-                    ],
-                    [
-                        button(
-                            "🔙 الرئيسية",
-                            "home",
-                            "danger"
-                        )
-                    ]
-                ]
-            }
+اشحن رصيدك أولاً.
+""".strip()
         )
+
+        PENDING.pop(user_id, None)
 
         return True
 
@@ -1682,26 +812,17 @@ def receive_quantity(
 
     cur = connection.cursor()
 
-    cur.execute(
-        """
+    cur.execute("""
         INSERT INTO orders
-        (
-            user_id,
-            service_id,
-            target,
-            quantity,
-            total
-        )
+        (user_id, service_id, target, quantity, total)
         VALUES (?, ?, ?, ?, ?)
-        """,
-        (
-            user_id,
-            service["id"],
-            state["target"],
-            quantity,
-            total
-        )
-    )
+    """, (
+        user_id,
+        service_id,
+        state["target"],
+        quantity,
+        total
+    ))
 
     order_id = cur.lastrowid
 
@@ -1710,55 +831,25 @@ def receive_quantity(
 
     PENDING.pop(user_id, None)
 
-    edit_message(
+    send_message(
         chat_id,
-        state["message_id"],
         f"""
-✅ تم إنشاء الطلب بنجاح
+✅ تم إنشاء الطلب
 
-🆔 رقم الطلب:
-#{order_id}
+🆔 رقم الطلب: #{order_id}
 
-🛍 الخدمة:
-{service['name']}
+🛍 الخدمة: {service['name']}
+🎯 الهدف: {state['target']}
+📊 الكمية: {quantity}
+💰 التكلفة: {round(total, 2)} نقطة
 
-🎯 الهدف:
-{state['target']}
-
-📊 الكمية:
-{quantity}
-
-💰 التكلفة:
-{total:.1f} نقطة
-
-⏳ الحالة:
-بانتظار مراجعة الإدارة.
-""".strip(),
-        {
-            "inline_keyboard": [
-                [
-                    button(
-                        "🗓 طلباتي",
-                        "orders",
-                        "primary"
-                    )
-                ],
-                [
-                    button(
-                        "🔙 الرئيسية",
-                        "home",
-                        "danger"
-                    )
-                ]
-            ]
-        }
+⏳ الحالة: بانتظار مراجعة الإدارة.
+""".strip()
     )
 
     if ADMIN_ID:
 
-        send_message(
-            ADMIN_ID,
-            f"""
+        admin_text = f"""
 🚨 طلب جديد
 
 🆔 #{order_id}
@@ -1776,31 +867,385 @@ def receive_quantity(
 {quantity}
 
 💰 التكلفة:
-{total:.1f} نقطة
-""".strip(),
-            {
-                "inline_keyboard": [
-                    [
-                        button(
-                            "✅ قبول",
-                            f"accept:{order_id}",
-                            "success"
-                        ),
-                        button(
-                            "❌ رفض",
-                            f"reject:{order_id}",
-                            "danger"
-                        )
-                    ]
+{round(total, 2)} نقطة
+
+⏳ الحالة: بانتظار المراجعة.
+""".strip()
+
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "✅ قبول",
+                        "callback_data": f"accept:{order_id}"
+                    },
+                    {
+                        "text": "❌ رفض",
+                        "callback_data": f"reject:{order_id}"
+                    }
                 ]
-            }
+            ]
+        }
+
+        send_message(
+            ADMIN_ID,
+            admin_text,
+            keyboard
         )
 
     return True
 
 
 # =========================================================
-# ACCEPT / REJECT
+# حساب المستخدم
+# =========================================================
+
+def show_account(chat_id, user_id):
+
+    user = get_user(user_id)
+
+    if not user:
+        return
+
+    username = user["username"] or "بدون معرف"
+
+    text = f"""
+👑 حسابك
+
+🆔 ID:
+{user['id']}
+
+👤 المستخدم:
+@{username}
+
+💳 الرصيد:
+{user['balance']} نقطة
+""".strip()
+
+    send_message(
+        chat_id,
+        text,
+        {
+            "inline_keyboard": [
+
+                [
+                    {
+                        "text": "💳 شحن الرصيد",
+                        "callback_data": "topup"
+                    }
+                ],
+
+                [
+                    {
+                        "text": "🔙 الرئيسية",
+                        "callback_data": "home"
+                    }
+                ]
+
+            ]
+        }
+    )
+
+
+# =========================================================
+# الطلبات السابقة
+# =========================================================
+
+def show_orders(chat_id, user_id):
+
+    connection = db()
+
+    rows = connection.execute("""
+        SELECT orders.*, services.name
+        FROM orders
+        LEFT JOIN services
+        ON services.id = orders.service_id
+        WHERE orders.user_id=?
+        ORDER BY orders.id DESC
+        LIMIT 10
+    """, (user_id,)).fetchall()
+
+    connection.close()
+
+    if not rows:
+
+        send_message(
+            chat_id,
+            "🗓 لا توجد لديك طلبات حتى الآن."
+        )
+
+        return
+
+    status_names = {
+        "pending": "⏳ بانتظار المراجعة",
+        "accepted": "🔵 مقبول",
+        "working": "🛠 قيد التنفيذ",
+        "completed": "✅ مكتمل",
+        "rejected": "❌ مرفوض"
+    }
+
+    text = "🗓 آخر الطلبات\n\n"
+
+    for row in rows:
+
+        status = status_names.get(
+            row["status"],
+            row["status"]
+        )
+
+        text += (
+            f"🆔 #{row['id']}\n"
+            f"🛍 {row['name']}\n"
+            f"📊 {row['quantity']}\n"
+            f"{status}\n"
+            f"────────────\n"
+        )
+
+    send_message(
+        chat_id,
+        text
+    )
+
+
+# =========================================================
+# شحن Stars
+# =========================================================
+
+def create_invoice(chat_id):
+
+    return telegram(
+        "sendInvoice",
+        {
+            "chat_id": chat_id,
+            "title": "💳 شحن الرصيد",
+            "description": "شحن 10 نقاط",
+            "payload": f"topup_{chat_id}_10",
+            "currency": "XTR",
+            "prices": json.dumps([
+                {
+                    "label": "10 نقاط",
+                    "amount": 10
+                }
+            ])
+        }
+    )
+
+
+# =========================================================
+# الإحصائيات
+# =========================================================
+
+def show_stats(chat_id):
+
+    connection = db()
+
+    users = connection.execute(
+        "SELECT COUNT(*) FROM users"
+    ).fetchone()[0]
+
+    orders = connection.execute(
+        "SELECT COUNT(*) FROM orders"
+    ).fetchone()[0]
+
+    completed = connection.execute(
+        "SELECT COUNT(*) FROM orders WHERE status='completed'"
+    ).fetchone()[0]
+
+    connection.close()
+
+    send_message(
+        chat_id,
+        f"""
+📉 إحصائيات البوت
+
+👥 المستخدمون: {users}
+
+🗓 جميع الطلبات: {orders}
+
+🏅 الطلبات المكتملة: {completed}
+""".strip()
+    )
+
+
+# =========================================================
+# الإدارة
+# =========================================================
+
+def admin_menu(chat_id):
+
+    if chat_id != ADMIN_ID:
+        return
+
+    send_message(
+        chat_id,
+        f"""
+👑 لوحة الإدارة
+
+أهلاً بك في لوحة تحكم {STORE_NAME}
+
+اختر العملية المطلوبة:
+""".strip(),
+        admin_keyboard()
+    )
+
+
+def admin_sections(chat_id):
+
+    connection = db()
+
+    rows = connection.execute(
+        "SELECT * FROM sections ORDER BY id"
+    ).fetchall()
+
+    connection.close()
+
+    buttons = []
+
+    for row in rows:
+
+        status = "🟢" if row["enabled"] else "🔴"
+
+        buttons.append([
+            {
+                "text": f"{status} {row['emoji']} {row['name']}",
+                "callback_data": f"admin_section:{row['id']}"
+            }
+        ])
+
+    buttons.append([
+        {
+            "text": "➕ إضافة قسم",
+            "callback_data": "add_section"
+        }
+    ])
+
+    buttons.append([
+        {
+            "text": "🔙 الإدارة",
+            "callback_data": "admin"
+        }
+    ])
+
+    send_message(
+        chat_id,
+        "🛍 إدارة الأقسام",
+        {
+            "inline_keyboard": buttons
+        }
+    )
+
+
+def admin_services(chat_id):
+
+    connection = db()
+
+    rows = connection.execute("""
+        SELECT services.*, sections.name AS section_name
+        FROM services
+        LEFT JOIN sections
+        ON sections.id=services.section_id
+        ORDER BY services.id DESC
+        LIMIT 50
+    """).fetchall()
+
+    connection.close()
+
+    buttons = []
+
+    for row in rows:
+
+        status = "🟢" if row["enabled"] else "🔴"
+
+        buttons.append([
+            {
+                "text": f"{status} {row['name']}",
+                "callback_data": f"admin_service:{row['id']}"
+            }
+        ])
+
+    buttons.append([
+        {
+            "text": "➕ إضافة خدمة",
+            "callback_data": "add_service"
+        }
+    ])
+
+    buttons.append([
+        {
+            "text": "🔙 الإدارة",
+            "callback_data": "admin"
+        }
+    ])
+
+    send_message(
+        chat_id,
+        "📉 إدارة الخدمات",
+        {
+            "inline_keyboard": buttons
+        }
+    )
+
+
+def admin_orders(chat_id):
+
+    connection = db()
+
+    rows = connection.execute("""
+        SELECT orders.*, services.name
+        FROM orders
+        LEFT JOIN services
+        ON services.id=orders.service_id
+        WHERE orders.status='pending'
+        ORDER BY orders.id DESC
+        LIMIT 20
+    """).fetchall()
+
+    connection.close()
+
+    if not rows:
+
+        send_message(
+            chat_id,
+            "✅ لا توجد طلبات معلقة."
+        )
+
+        return
+
+    for row in rows:
+
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "✅ قبول",
+                        "callback_data": f"accept:{row['id']}"
+                    },
+                    {
+                        "text": "❌ رفض",
+                        "callback_data": f"reject:{row['id']}"
+                    }
+                ]
+            ]
+        }
+
+        send_message(
+            chat_id,
+            f"""
+🚨 طلب #{row['id']}
+
+🛍 {row['name']}
+🎯 {row['target']}
+📊 {row['quantity']}
+💰 {row['total']} نقطة
+
+الحالة: ⏳ بانتظار المراجعة
+""".strip(),
+            keyboard
+        )
+
+
+# =========================================================
+# قبول الطلب
 # =========================================================
 
 def accept_order(order_id):
@@ -1813,15 +1258,13 @@ def accept_order(order_id):
     ).fetchone()
 
     if not row:
+
         connection.close()
+
         return
 
     connection.execute(
-        """
-        UPDATE orders
-        SET status='accepted'
-        WHERE id=?
-        """,
+        "UPDATE orders SET status='accepted' WHERE id=?",
         (order_id,)
     )
 
@@ -1830,9 +1273,17 @@ def accept_order(order_id):
 
     send_message(
         row["user_id"],
-        f"✅ تم قبول طلبك #{order_id}\n\n🛠 سيتم البدء بتنفيذ الطلب."
+        f"""
+✅ تم قبول طلبك #{order_id}
+
+🛠 سيتم البدء بتنفيذ الطلب.
+""".strip()
     )
 
+
+# =========================================================
+# رفض الطلب
+# =========================================================
 
 def reject_order(order_id):
 
@@ -1844,7 +1295,9 @@ def reject_order(order_id):
     ).fetchone()
 
     if not row:
+
         connection.close()
+
         return
 
     if row["status"] == "pending":
@@ -1855,11 +1308,7 @@ def reject_order(order_id):
         )
 
     connection.execute(
-        """
-        UPDATE orders
-        SET status='rejected'
-        WHERE id=?
-        """,
+        "UPDATE orders SET status='rejected' WHERE id=?",
         (order_id,)
     )
 
@@ -1871,24 +1320,20 @@ def reject_order(order_id):
         f"""
 ❌ تم رفض طلبك #{order_id}
 
-💳 تم إرجاع:
-{row['total']} نقطة
+💳 تم إرجاع {row['total']} نقطة إلى رصيدك.
 """.strip()
     )
 
 
 # =========================================================
-# CALLBACK
+# Callback
 # =========================================================
 
 def handle_callback(callback):
 
-    callback_id = callback["id"]
+    callback_id = callback.get("id")
 
-    data = callback.get(
-        "data",
-        ""
-    )
+    data = callback.get("data", "")
 
     message = callback.get(
         "message",
@@ -1902,162 +1347,151 @@ def handle_callback(callback):
 
     chat_id = chat.get("id")
 
-    message_id = message.get(
-        "message_id"
-    )
-
     user = callback.get(
         "from",
         {}
     )
 
-    user_id = user.get(
-        "id"
-    )
+    user_id = user.get("id")
 
-    answer_callback(
-        callback_id
-    )
+    if callback_id:
+        answer_callback(callback_id)
 
-    # -------------------------
-    # GENERAL
-    # -------------------------
+    if not chat_id:
+        return
+
+    # الرئيسية
 
     if data == "home":
 
         start_user(
             chat_id,
-            user,
-            message_id
+            user
         )
 
         return
+
+    # الأقسام
 
     if data == "sections":
 
         show_sections(
-            chat_id,
-            message_id
+            chat_id
         )
 
         return
+
+    # الحساب
 
     if data == "account":
 
         show_account(
             chat_id,
-            message_id,
             user_id
         )
 
         return
+
+    # الطلبات
 
     if data == "orders":
 
         show_orders(
             chat_id,
-            message_id,
             user_id
         )
 
         return
+
+    # الإحصائيات
 
     if data == "stats":
 
         show_stats(
-            chat_id,
-            message_id
+            chat_id
         )
 
         return
+
+    # الدعم
 
     if data == "support":
 
-        show_support(
+        send_message(
             chat_id,
-            message_id
+            "🛡 للدعم تواصل مع الإدارة."
         )
 
         return
+
+    # شحن
 
     if data == "topup":
 
         create_invoice(
-            chat_id,
-            message_id
+            chat_id
         )
 
         return
 
-    if data == "cancel_order":
-
-        PENDING.pop(
-            user_id,
-            None
-        )
-
-        start_user(
-            chat_id,
-            user,
-            message_id
-        )
-
-        return
-
-    # -------------------------
-    # SECTIONS
-    # -------------------------
+    # قسم
 
     if data.startswith("section:"):
 
-        section_id = int(
-            data.split(":")[1]
-        )
+        try:
+            section_id = int(
+                data.split(":")[1]
+            )
 
-        show_services(
-            chat_id,
-            message_id,
-            section_id
-        )
+            show_services(
+                chat_id,
+                section_id
+            )
+
+        except Exception:
+            pass
 
         return
 
-    # -------------------------
-    # SERVICE
-    # -------------------------
+    # خدمة
 
     if data.startswith("service:"):
 
-        service_id = int(
-            data.split(":")[1]
-        )
+        try:
+            service_id = int(
+                data.split(":")[1]
+            )
 
-        show_service(
-            chat_id,
-            message_id,
-            service_id
-        )
+            show_service(
+                chat_id,
+                service_id
+            )
+
+        except Exception:
+            pass
 
         return
+
+    # طلب
 
     if data.startswith("order:"):
 
-        service_id = int(
-            data.split(":")[1]
-        )
+        try:
+            service_id = int(
+                data.split(":")[1]
+            )
 
-        begin_order(
-            chat_id,
-            message_id,
-            service_id,
-            user_id
-        )
+            begin_order(
+                chat_id,
+                service_id
+            )
+
+        except Exception:
+            pass
 
         return
 
-    # -------------------------
-    # ADMIN
-    # -------------------------
+    # الإدارة
 
     if user_id != ADMIN_ID:
         return
@@ -2065,8 +1499,7 @@ def handle_callback(callback):
     if data == "admin":
 
         admin_menu(
-            chat_id,
-            message_id
+            chat_id
         )
 
         return
@@ -2074,8 +1507,7 @@ def handle_callback(callback):
     if data == "admin_sections":
 
         admin_sections(
-            chat_id,
-            message_id
+            chat_id
         )
 
         return
@@ -2083,8 +1515,7 @@ def handle_callback(callback):
     if data == "admin_services":
 
         admin_services(
-            chat_id,
-            message_id
+            chat_id
         )
 
         return
@@ -2092,61 +1523,74 @@ def handle_callback(callback):
     if data == "admin_orders":
 
         admin_orders(
-            chat_id,
-            message_id
+            chat_id
         )
 
         return
 
     if data == "admin_stats":
 
-        admin_stats(
-            chat_id,
-            message_id
+        show_stats(
+            chat_id
         )
 
         return
 
     if data.startswith("accept:"):
 
-        order_id = int(
-            data.split(":")[1]
-        )
+        try:
 
-        accept_order(
-            order_id
-        )
+            order_id = int(
+                data.split(":")[1]
+            )
 
-        answer_callback(
-            callback_id,
-            "✅ تم قبول الطلب"
-        )
+            accept_order(
+                order_id
+            )
+
+            send_message(
+                chat_id,
+                f"✅ تم قبول الطلب #{order_id}"
+            )
+
+        except Exception:
+            pass
 
         return
 
     if data.startswith("reject:"):
 
-        order_id = int(
-            data.split(":")[1]
-        )
+        try:
 
-        reject_order(
-            order_id
-        )
+            order_id = int(
+                data.split(":")[1]
+            )
 
-        answer_callback(
-            callback_id,
-            "❌ تم رفض الطلب"
-        )
+            reject_order(
+                order_id
+            )
+
+            send_message(
+                chat_id,
+                f"❌ تم رفض الطلب #{order_id}"
+            )
+
+        except Exception:
+            pass
 
         return
 
 
 # =========================================================
-# UPDATE
+# استقبال Update من Telegram
 # =========================================================
 
 def handle_update(update):
+
+    if not isinstance(update, dict):
+        return
+
+    # Callback
 
     if "callback_query" in update:
 
@@ -2156,9 +1600,9 @@ def handle_update(update):
 
         return
 
-    message = update.get(
-        "message"
-    )
+    # Message
+
+    message = update.get("message")
 
     if not message:
         return
@@ -2173,13 +1617,8 @@ def handle_update(update):
         {}
     )
 
-    user_id = user.get(
-        "id"
-    )
-
-    chat_id = chat.get(
-        "id"
-    )
+    user_id = user.get("id")
+    chat_id = chat.get("id")
 
     if not user_id or not chat_id:
         return
@@ -2189,33 +1628,19 @@ def handle_update(update):
     text = message.get(
         "text",
         ""
-    )
+    ).strip()
 
-    # -------------------------
-    # ADMIN
-    # -------------------------
+    # أدمن
 
-    if (
-        text == "/admin"
-        and user_id == ADMIN_ID
-    ):
+    if text == "/admin" and user_id == ADMIN_ID:
 
-        # أول مرة نرسل لوحة الإدارة
-        send_message(
-            chat_id,
-            f"""
-👑 لوحة تحكم {STORE_NAME}
-
-اختر العملية المطلوبة:
-""".strip(),
-            admin_keyboard()
+        admin_menu(
+            chat_id
         )
 
         return
 
-    # -------------------------
-    # START
-    # -------------------------
+    # بداية
 
     if text.startswith("/start"):
 
@@ -2226,17 +1651,15 @@ def handle_update(update):
 
         return
 
-    # -------------------------
-    # PENDING ORDER
-    # -------------------------
+    # الطلبات المتعددة
 
     if user_id in PENDING:
 
         state = PENDING[user_id]
 
-        if state["type"] == "target":
+        if state["type"] == "order_target":
 
-            receive_target(
+            receive_order_target(
                 user_id,
                 chat_id,
                 text
@@ -2244,9 +1667,9 @@ def handle_update(update):
 
             return
 
-        if state["type"] == "quantity":
+        if state["type"] == "order_quantity":
 
-            receive_quantity(
+            receive_order_quantity(
                 user_id,
                 chat_id,
                 text
@@ -2254,9 +1677,7 @@ def handle_update(update):
 
             return
 
-    # -------------------------
-    # HELP
-    # -------------------------
+    # مساعدة
 
     if text == "/help":
 
@@ -2266,42 +1687,22 @@ def handle_update(update):
 🛡 المساعدة
 
 🛍 اختر الخدمة
-🎯 أرسل الهدف
-📊 أرسل الكمية
+📊 حدد الكمية
 💳 تأكد من وجود الرصيد
-🗓 تابع طلبك من قسم طلباتي
-""".strip(),
-            {
-                "inline_keyboard": [
-                    [
-                        button(
-                            "🛍 الخدمات",
-                            "sections",
-                            "primary"
-                        )
-                    ],
-                    [
-                        button(
-                            "🔙 الرئيسية",
-                            "home",
-                            "danger"
-                        )
-                    ]
-                ]
-            }
+🗓 تابع حالة طلبك
+
+إذا واجهتك مشكلة تواصل مع الدعم.
+""".strip()
         )
 
         return
 
 
 # =========================================================
-# WEBHOOK
+# VERCEL / API
 # =========================================================
 
-@app.route(
-    "/",
-    methods=["GET"]
-)
+@app.route("/", methods=["GET"])
 def root():
 
     return jsonify({
@@ -2312,10 +1713,7 @@ def root():
     })
 
 
-@app.route(
-    "/",
-    methods=["POST"]
-)
+@app.route("/", methods=["POST"])
 def webhook():
 
     try:
@@ -2337,7 +1735,7 @@ def webhook():
 
         return jsonify({
             "ok": True
-        })
+        }), 200
 
     except Exception as e:
 
@@ -2352,24 +1750,18 @@ def webhook():
         }), 200
 
 
-# =========================================================
-# HEALTH
-# =========================================================
-
-@app.route(
-    "/health",
-    methods=["GET"]
-)
+@app.route("/health", methods=["GET"])
 def health():
 
     return jsonify({
         "ok": True,
-        "service": STORE_NAME
+        "service": STORE_NAME,
+        "status": "healthy"
     })
 
 
 # =========================================================
-# LOCAL
+# تشغيل محلي
 # =========================================================
 
 if __name__ == "__main__":
