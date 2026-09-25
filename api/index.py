@@ -3,6 +3,9 @@ import json
 import urllib.request
 import urllib.parse
 
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
@@ -16,7 +19,7 @@ def telegram(method, data=None):
     if not BOT_TOKEN:
         return {
             "ok": False,
-            "description": "BOT_TOKEN is missing"
+            "error": "BOT_TOKEN is missing"
         }
 
     if data is None:
@@ -34,7 +37,7 @@ def telegram(method, data=None):
             method="POST"
         )
 
-        with urllib.request.urlopen(req, timeout=15) as response:
+        with urllib.request.urlopen(req, timeout=10) as response:
             return json.loads(
                 response.read().decode("utf-8")
             )
@@ -42,12 +45,12 @@ def telegram(method, data=None):
     except Exception as e:
         return {
             "ok": False,
-            "description": str(e)
+            "error": str(e)
         }
 
 
-def send_message(chat_id, text):
-    keyboard = {
+def gift_keyboard():
+    return {
         "inline_keyboard": [
             [
                 {
@@ -60,17 +63,28 @@ def send_message(chat_id, text):
         ]
     }
 
-    return telegram(
+
+def send_start(chat_id):
+
+    text = (
+        "🎁 أهلاً بك في بوت الهدايا\n\n"
+        f"يمكنك اختيار قيمة الهدية وإرسالها إلى {TARGET_USERNAME}\n\n"
+        "⭐ اضغط على الزر بالأسفل للمتابعة."
+    )
+
+    result = telegram(
         "sendMessage",
         {
             "chat_id": chat_id,
             "text": text,
             "reply_markup": json.dumps(
-                keyboard,
+                gift_keyboard(),
                 ensure_ascii=False
             )
         }
     )
+
+    return result
 
 
 def handle_update(update):
@@ -97,100 +111,62 @@ def handle_update(update):
 
     if text.startswith("/start"):
 
-        send_message(
-            chat_id,
-            (
-                "🎁 أهلاً بك في بوت الهدايا\n\n"
-                f"🎯 المستلم: {TARGET_USERNAME}\n\n"
-                "⭐ اختر قيمة الهدية من الزر التالي:"
-            )
-        )
-
+        send_start(chat_id)
         return
 
     if text.startswith("/help"):
 
-        send_message(
-            chat_id,
-            (
-                "🎁 بوت الهدايا\n\n"
-                "اضغط على «إرسال هدية» لفتح واجهة الهدايا."
-            )
+        telegram(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": (
+                    "🎁 بوت الهدايا\n\n"
+                    "اضغط الزر بالأسفل لاختيار قيمة الهدية:"
+                ),
+                "reply_markup": json.dumps(
+                    gift_keyboard(),
+                    ensure_ascii=False
+                )
+            }
         )
 
         return
 
 
-def handler(request):
+@app.route("/", methods=["GET"])
+def home():
+
+    return jsonify({
+        "ok": True,
+        "service": "Telegram Gift Bot",
+        "web_app": WEB_APP_URL,
+        "target": TARGET_USERNAME
+    })
+
+
+@app.route("/", methods=["POST"])
+def webhook():
 
     try:
 
-        # GET
-        if request.method == "GET":
+        update = request.get_json(silent=True)
 
-            return {
-                "statusCode": 200,
-                "headers": {
-                    "Content-Type": "application/json"
-                },
-                "body": json.dumps({
-                    "ok": True,
-                    "message": "Telegram webhook is running",
-                    "web_app": WEB_APP_URL,
-                    "target": TARGET_USERNAME
-                }, ensure_ascii=False)
-            }
-
-        # POST
-        if request.method == "POST":
-
-            body = request.body
-
-            if isinstance(body, bytes):
-                body = body.decode("utf-8")
-
-            if not body:
-                return {
-                    "statusCode": 200,
-                    "body": json.dumps({
-                        "ok": True
-                    })
-                }
-
-            update = json.loads(body)
-
-            handle_update(update)
-
-            return {
-                "statusCode": 200,
-                "headers": {
-                    "Content-Type": "application/json"
-                },
-                "body": json.dumps({
-                    "ok": True
-                })
-            }
-
-        return {
-            "statusCode": 405,
-            "headers": {
-                "Content-Type": "application/json"
-            },
-            "body": json.dumps({
+        if not update:
+            return jsonify({
                 "ok": False,
-                "error": "Method Not Allowed"
-            })
-        }
+                "error": "Empty update"
+            }), 400
+
+        handle_update(update)
+
+        return jsonify({
+            "ok": True
+        }), 200
 
     except Exception as e:
 
-        return {
-            "statusCode": 200,
-            "headers": {
-                "Content-Type": "application/json"
-            },
-            "body": json.dumps({
-                "ok": False,
-                "error": str(e)
-            })
-        }
+        return jsonify({
+            "ok": False,
+            "error": str(e)
+        }), 200
