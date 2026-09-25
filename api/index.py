@@ -3,28 +3,20 @@ import json
 import urllib.request
 import urllib.parse
 
-# =========================
-# الإعدادات
-# =========================
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
 WEB_APP_URL = "https://v-alyo.vercel.app/"
-
 TARGET_USERNAME = "@OM_G9"
 
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
-# =========================
-# Telegram API
-# =========================
-
 def telegram(method, data=None):
     if not BOT_TOKEN:
         return {
             "ok": False,
-            "error": "BOT_TOKEN is missing"
+            "description": "BOT_TOKEN is missing"
         }
 
     if data is None:
@@ -33,7 +25,7 @@ def telegram(method, data=None):
     try:
         encoded = urllib.parse.urlencode(data).encode("utf-8")
 
-        request = urllib.request.Request(
+        req = urllib.request.Request(
             f"{API_URL}/{method}",
             data=encoded,
             headers={
@@ -42,7 +34,7 @@ def telegram(method, data=None):
             method="POST"
         )
 
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with urllib.request.urlopen(req, timeout=15) as response:
             return json.loads(
                 response.read().decode("utf-8")
             )
@@ -50,16 +42,11 @@ def telegram(method, data=None):
     except Exception as e:
         return {
             "ok": False,
-            "error": str(e)
+            "description": str(e)
         }
 
 
-# =========================
-# إرسال رسالة البداية
-# =========================
-
-def send_start(chat_id):
-
+def send_message(chat_id, text):
     keyboard = {
         "inline_keyboard": [
             [
@@ -73,12 +60,6 @@ def send_start(chat_id):
         ]
     }
 
-    text = (
-        "🎁 أهلاً بك في بوت الهدايا\n\n"
-        f"يمكنك اختيار قيمة الهدية وإرسالها إلى {TARGET_USERNAME}\n\n"
-        "⭐ اختر إرسال هدية للمتابعة."
-    )
-
     return telegram(
         "sendMessage",
         {
@@ -91,10 +72,6 @@ def send_start(chat_id):
         }
     )
 
-
-# =========================
-# معالجة التحديثات
-# =========================
 
 def handle_update(update):
 
@@ -119,80 +96,66 @@ def handle_update(update):
     text = message.get("text", "")
 
     if text.startswith("/start"):
-        send_start(chat_id)
+
+        send_message(
+            chat_id,
+            (
+                "🎁 أهلاً بك في بوت الهدايا\n\n"
+                f"🎯 المستلم: {TARGET_USERNAME}\n\n"
+                "⭐ اختر قيمة الهدية من الزر التالي:"
+            )
+        )
+
         return
 
     if text.startswith("/help"):
 
-        telegram(
-            "sendMessage",
-            {
-                "chat_id": chat_id,
-                "text": (
-                    "🎁 بوت الهدايا\n\n"
-                    "اضغط الزر التالي لاختيار قيمة الهدية:"
-                ),
-                "reply_markup": json.dumps(
-                    {
-                        "inline_keyboard": [
-                            [
-                                {
-                                    "text": "🎁 إرسال هدية",
-                                    "web_app": {
-                                        "url": WEB_APP_URL
-                                    }
-                                }
-                            ]
-                        ]
-                    },
-                    ensure_ascii=False
-                )
-            }
+        send_message(
+            chat_id,
+            (
+                "🎁 بوت الهدايا\n\n"
+                "اضغط على «إرسال هدية» لفتح واجهة الهدايا."
+            )
         )
 
         return
 
 
-# =========================
-# Vercel Handler
-# =========================
-
 def handler(request):
 
-    # -------------------------
-    # GET
-    # -------------------------
+    try:
 
-    if request.method == "GET":
+        # GET
+        if request.method == "GET":
 
-        return {
-            "statusCode": 200,
-            "headers": {
-                "Content-Type": "application/json; charset=utf-8"
-            },
-            "body": json.dumps(
-                {
+            return {
+                "statusCode": 200,
+                "headers": {
+                    "Content-Type": "application/json"
+                },
+                "body": json.dumps({
                     "ok": True,
-                    "service": "Telegram Gift Demo",
+                    "message": "Telegram webhook is running",
                     "web_app": WEB_APP_URL,
                     "target": TARGET_USERNAME
-                },
-                ensure_ascii=False
-            )
-        }
+                }, ensure_ascii=False)
+            }
 
-    # -------------------------
-    # POST - Telegram Webhook
-    # -------------------------
-
-    if request.method == "POST":
-
-        try:
+        # POST
+        if request.method == "POST":
 
             body = request.body
 
             if isinstance(body, bytes):
                 body = body.decode("utf-8")
+
+            if not body:
+                return {
+                    "statusCode": 200,
+                    "body": json.dumps({
+                        "ok": True
+                    })
+                }
 
             update = json.loads(body)
 
@@ -208,30 +171,26 @@ def handler(request):
                 })
             }
 
-        except Exception as e:
+        return {
+            "statusCode": 405,
+            "headers": {
+                "Content-Type": "application/json"
+            },
+            "body": json.dumps({
+                "ok": False,
+                "error": "Method Not Allowed"
+            })
+        }
 
-            return {
-                "statusCode": 200,
-                "headers": {
-                    "Content-Type": "application/json"
-                },
-                "body": json.dumps({
-                    "ok": False,
-                    "error": str(e)
-                })
-            }
+    except Exception as e:
 
-    # -------------------------
-    # Method غير مدعوم
-    # -------------------------
-
-    return {
-        "statusCode": 405,
-        "headers": {
-            "Content-Type": "application/json"
-        },
-        "body": json.dumps({
-            "ok": False,
-            "error": "Method Not Allowed"
-        })
-    }
+        return {
+            "statusCode": 200,
+            "headers": {
+                "Content-Type": "application/json"
+            },
+            "body": json.dumps({
+                "ok": False,
+                "error": str(e)
+            })
+        }
