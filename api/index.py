@@ -1,56 +1,36 @@
 import os
 import json
 import urllib.request
-import urllib.parse
-
-from flask import Flask, request, jsonify
-
-app = Flask(__name__)
+from http.server import BaseHTTPRequestHandler
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-
 WEB_APP_URL = "https://v-alyo.vercel.app/"
 TARGET_USERNAME = "@OM_G9"
 
-API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
+def telegram(method, data):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
 
-def telegram(method, data=None):
-    if not BOT_TOKEN:
-        return {
-            "ok": False,
-            "error": "BOT_TOKEN is missing"
-        }
+    body = json.dumps(data, ensure_ascii=False).encode("utf-8")
 
-    if data is None:
-        data = {}
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json"
+        },
+        method="POST"
+    )
 
-    try:
-        encoded = urllib.parse.urlencode(data).encode("utf-8")
-
-        req = urllib.request.Request(
-            f"{API_URL}/{method}",
-            data=encoded,
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded"
-            },
-            method="POST"
+    with urllib.request.urlopen(req, timeout=15) as response:
+        return json.loads(
+            response.read().decode("utf-8")
         )
 
-        with urllib.request.urlopen(req, timeout=10) as response:
-            return json.loads(
-                response.read().decode("utf-8")
-            )
 
-    except Exception as e:
-        return {
-            "ok": False,
-            "error": str(e)
-        }
+def send_message(chat_id):
 
-
-def gift_keyboard():
-    return {
+    keyboard = {
         "inline_keyboard": [
             [
                 {
@@ -63,31 +43,24 @@ def gift_keyboard():
         ]
     }
 
-
-def send_start(chat_id):
-
-    text = (
-        "🎁 أهلاً بك في بوت الهدايا\n\n"
-        f"يمكنك اختيار قيمة الهدية وإرسالها إلى {TARGET_USERNAME}\n\n"
-        "⭐ اضغط على الزر بالأسفل للمتابعة."
-    )
-
-    result = telegram(
+    telegram(
         "sendMessage",
         {
             "chat_id": chat_id,
-            "text": text,
+            "text": (
+                "🎁 أهلاً بك في بوت الهدايا\n\n"
+                f"يمكنك اختيار قيمة الهدية وإرسالها إلى {TARGET_USERNAME}\n\n"
+                "⭐ اضغط على الزر بالأسفل للمتابعة."
+            ),
             "reply_markup": json.dumps(
-                gift_keyboard(),
+                keyboard,
                 ensure_ascii=False
             )
         }
     )
 
-    return result
 
-
-def handle_update(update):
+def process_update(update):
 
     if not isinstance(update, dict):
         return
@@ -111,62 +84,81 @@ def handle_update(update):
 
     if text.startswith("/start"):
 
-        send_start(chat_id)
-        return
+        send_message(chat_id)
 
-    if text.startswith("/help"):
+    elif text.startswith("/help"):
 
-        telegram(
-            "sendMessage",
+        send_message(chat_id)
+
+
+class handler(BaseHTTPRequestHandler):
+
+    def send_json(self, data, status=200):
+
+        output = json.dumps(
+            data,
+            ensure_ascii=False
+        ).encode("utf-8")
+
+        self.send_response(status)
+
+        self.send_header(
+            "Content-Type",
+            "application/json; charset=utf-8"
+        )
+
+        self.send_header(
+            "Content-Length",
+            str(len(output))
+        )
+
+        self.end_headers()
+
+        self.wfile.write(output)
+
+    def do_GET(self):
+
+        self.send_json(
             {
-                "chat_id": chat_id,
-                "text": (
-                    "🎁 بوت الهدايا\n\n"
-                    "اضغط الزر بالأسفل لاختيار قيمة الهدية:"
-                ),
-                "reply_markup": json.dumps(
-                    gift_keyboard(),
-                    ensure_ascii=False
-                )
+                "ok": True,
+                "service": "Telegram Gift Bot",
+                "web_app": WEB_APP_URL
             }
         )
 
-        return
+    def do_POST(self):
 
+        try:
 
-@app.route("/", methods=["GET"])
-def home():
+            content_length = int(
+                self.headers.get(
+                    "Content-Length",
+                    "0"
+                )
+            )
 
-    return jsonify({
-        "ok": True,
-        "service": "Telegram Gift Bot",
-        "web_app": WEB_APP_URL,
-        "target": TARGET_USERNAME
-    })
+            body = self.rfile.read(
+                content_length
+            )
 
+            update = json.loads(
+                body.decode("utf-8")
+            )
 
-@app.route("/", methods=["POST"])
-def webhook():
+            process_update(update)
 
-    try:
+            self.send_json(
+                {
+                    "ok": True
+                }
+            )
 
-        update = request.get_json(silent=True)
+        except Exception as e:
 
-        if not update:
-            return jsonify({
-                "ok": False,
-                "error": "Empty update"
-            }), 400
-
-        handle_update(update)
-
-        return jsonify({
-            "ok": True
-        }), 200
-
-    except Exception as e:
-
-        return jsonify({
-            "ok": False,
-            "error": str(e)
-        }), 200
+            self.send_json(
+                {
+                    "ok": False,
+                    "error": str(e)
+                },
+                500
+            )
